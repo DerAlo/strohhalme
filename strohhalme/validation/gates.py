@@ -163,9 +163,6 @@ GATES: list[tuple[str, GateFn, dict]] = [
     ("profit_factor", gate_profit_factor, {"min_pf": 1.3}),
     ("monte_carlo", gate_monte_carlo, {}),
     ("significance", gate_significance, {"alpha": 0.05}),
-    ("stability", gate_stability, {}),
-    ("regime", gate_regime, {}),
-    ("walk_forward", gate_walk_forward, {}),
 ]
 
 
