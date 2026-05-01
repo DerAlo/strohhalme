@@ -138,12 +138,26 @@ def load_bars(
     return combined
 
 
-def add_indicators(bars: pd.DataFrame) -> pd.DataFrame:
+def add_indicators(
+    bars: pd.DataFrame,
+    sma_periods: list[int] | None = None,
+    ema_periods: list[int] | None = None,
+) -> pd.DataFrame:
     """Add common technical indicators (for strategy templates).
 
     Operates on a copy, does not mutate input.
     All indicators are backward-looking (no lookahead bias).
+
+    Args:
+        bars: OHLCV DataFrame with open/high/low/close columns
+        sma_periods: SMA periods to compute (default: all periods from 5 to 400 in steps of 5)
+        ema_periods: EMA periods to compute (default: all periods from 5 to 80 in steps of 5)
     """
+    if sma_periods is None:
+        sma_periods = list(range(5, 401, 5))   # covers all strategy templates
+    if ema_periods is None:
+        ema_periods = list(range(5, 81, 5))    # covers EMA up to 75
+
     df = bars.copy()
     close = df["close"]
     high = df["high"]
@@ -157,12 +171,12 @@ def add_indicators(bars: pd.DataFrame) -> pd.DataFrame:
     ], axis=1).max(axis=1)
     df["atr"] = tr.rolling(14, min_periods=7).mean()
 
-    # SMA
-    for p in [20, 50, 200]:
+    # SMA — all requested periods
+    for p in sma_periods:
         df[f"sma_{p}"] = close.rolling(p, min_periods=p // 2).mean()
 
-    # EMA
-    for p in [9, 21, 55]:
+    # EMA — all requested periods
+    for p in ema_periods:
         df[f"ema_{p}"] = close.ewm(span=p, min_periods=p // 2).mean()
 
     # RSI (14)
