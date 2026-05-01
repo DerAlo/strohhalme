@@ -63,8 +63,8 @@ def _simulate(
     position_type = 0         # 1=long, -1=short
     entry_price = 0.0
     entry_bar = 0
-    peak_equity = 0.0
-    current_equity = 0.0
+    peak_equity = 10000.0     # starting balance
+    current_equity = 10000.0
     swap_counter = 0
 
     for i in range(n):
@@ -111,7 +111,8 @@ def _simulate(
             # ── HOLD ──
             # Mark to market at bar close (mid price, no spread)
             mtm = (closes[i] - entry_price) * position_type * lot_size
-            pnl_bar[i] = mtm
+            prev_mtm = (closes[i-1] - entry_price) * position_type * lot_size if i > 0 else 0.0
+            pnl_bar[i] = mtm - prev_mtm
 
             # Swap: charge every 24 bars ≈ daily on H1
             swap_counter += 1
@@ -122,7 +123,7 @@ def _simulate(
                 swap_counter = 0
 
         # Update equity
-        current_equity += pnl_bar[i] - (pnl_bar[i-1] if i > 0 else 0.0)
+        current_equity += pnl_bar[i]
         equity[i] = current_equity
 
         # Drawdown

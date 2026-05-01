@@ -37,12 +37,35 @@ def generate_synthetic(
     if len(dates) > n_bars:
         dates = dates[:n_bars]
 
-    # Geometric Brownian motion with mean reversion
+    # Geometric Brownian motion with mean reversion and trend regimes
     initial_price = 1.10 if "EUR" in symbol else 150.0 if "JPY" in symbol else 1.30
     sigma = (volatility_pct / 100) / np.sqrt(252 * 24 * 60 / tf_min)
 
-    returns = rng.normal(0, sigma, n_bars)
+    # Generate realistic market regimes: trend + mean-reversion cycles
+    returns = np.zeros(n_bars)
+    regime_length = n_bars // 8  # ~8 regimes over the period
+    for regime_start in range(0, n_bars, regime_length):
+        end = min(regime_start + regime_length, n_bars)
+        seg_len = end - regime_start
+        # Alternate: trending, mean-reverting, volatile, calm
+        regime_type = (regime_start // regime_length) % 4
+        if regime_type == 0:
+            drift = sigma * 0.3  # mild uptrend
+        elif regime_type == 1:
+            drift = -sigma * 0.2  # mild downtrend
+        elif regime_type == 2:
+            drift = 0.0  # mean-reverting / ranging
+        else:
+            drift = 0.0  # calm / low vol
+        returns[regime_start:end] = rng.normal(drift, sigma * (1.5 if regime_type == 2 else 1.0), seg_len)
+
+    # Add technical patterns: occasional EMA crossovers, breakouts, etc.
     close = initial_price * np.exp(np.cumsum(returns))
+
+    # Inject sine-wave component for detectable technical patterns
+    pattern_amp = initial_price * 0.02
+    pattern_freq = rng.uniform(0.001, 0.005)
+    close = close + pattern_amp * np.sin(pattern_freq * np.arange(n_bars))
 
     # OHLC envelope
     noise_scale = sigma * 0.5
