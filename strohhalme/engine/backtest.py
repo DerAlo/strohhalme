@@ -66,8 +66,14 @@ def _simulate(
     peak_equity = 10000.0     # starting balance
     current_equity = 10000.0
     swap_counter = 0
+    stopped_out = False       # circuit breaker: stop trading if equity < 50%
 
     for i in range(n):
+        if stopped_out:
+            equity[i] = current_equity
+            pnl_bar[i] = 0.0
+            continue
+
         signal = positions[i]
         spread = spreads[i]
         is_thin = thin_bars[i]
@@ -125,6 +131,23 @@ def _simulate(
         # Update equity
         current_equity += pnl_bar[i]
         equity[i] = current_equity
+
+        # Circuit breaker: stop out if below 50%
+        if current_equity < 5000.0 and in_position:
+            # Emergency close at current close price
+            if position_type == 1:
+                close_price = closes[i] - slippage
+            else:
+                close_price = closes[i] + spread + slippage
+            pnl = (close_price - entry_price) * position_type * lot_size
+            current_equity += pnl - commission
+            pnl_bar[i] += pnl - commission
+            trades[i] = pnl - commission
+            in_position = False
+            position_type = 0
+            equity[i] = current_equity
+        if current_equity < 5000.0 and not in_position:
+            stopped_out = True
 
         # Drawdown
         if current_equity > peak_equity:
