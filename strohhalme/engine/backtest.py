@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from numba import njit
 
-from ..config import SYMBOLS_BY_NAME, COST_MODEL
+from ..config import SYMBOLS_BY_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -31,19 +31,22 @@ logger = logging.getLogger(__name__)
 
 @njit(cache=True)
 def _simulate(
-    positions: np.ndarray,   # -1, 0, 1 per bar
+    positions: np.ndarray,
     highs: np.ndarray,
     lows: np.ndarray,
     opens: np.ndarray,
     closes: np.ndarray,
-    spreads: np.ndarray,     # in price units (not pips)
-    atr: np.ndarray,         # 15-period ATR for slippage calc
+    spreads: np.ndarray,
+    atr: np.ndarray,
     lot_size: float,
     pip_value: float,
-    commission: float,       # per lot per round-turn
-    swap_long: float,        # per lot per day
+    commission: float,
+    swap_long: float,
     swap_short: float,
-    thin_bars: np.ndarray,   # bool: low-liquidity bars
+    thin_bars: np.ndarray,
+    slippage_pct: float = 0.3,
+    min_slippage: float = 0.5,
+    max_slippage: float = 50.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Numba-jitted fill simulation loop.
 
@@ -62,17 +65,13 @@ def _simulate(
     entry_bar = 0
     peak_equity = 0.0
     current_equity = 0.0
-    swap_counter = 0          # bars since last swap charge
-
-    slippage_pct = COST_MODEL["slippage_pct"]
-    min_slip = COST_MODEL["min_slippage_points"]
-    max_slip = COST_MODEL["max_slippage_points"]
+    swap_counter = 0
 
     for i in range(n):
         signal = positions[i]
         spread = spreads[i]
         is_thin = thin_bars[i]
-        slippage = max(min_slip, min(max_slip, atr[i] * slippage_pct))
+        slippage = max(min_slippage, min(max_slippage, atr[i] * slippage_pct))
 
         if signal != 0 and not in_position:
             # ── ENTRY ──
