@@ -21,6 +21,10 @@ from ..strategies.templates import StrategyTemplate, STRATEGIES
 
 logger = logging.getLogger(__name__)
 
+# Cache: per-worker-process cache for bars with pre-computed indicators.
+# Keyed by (symbol, timeframe, start, end) so each worker computes once.
+_worker_cache: dict[tuple, pd.DataFrame] = {}
+
 
 @dataclass
 class TrialResult:
@@ -56,6 +60,23 @@ class TrialResult:
         )
 
 
+def _load_bars_with_indicators(
+    symbol_name: str,
+    timeframe: str,
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
+    """Load bars and add indicators, cached per worker process."""
+    global _worker_cache
+    key = (symbol_name, timeframe, start, end)
+    if key not in _worker_cache:
+        bars = load_bars(symbol_name, timeframe, start=start, end=end)
+        if not bars.empty:
+            bars = add_indicators(bars)
+        _worker_cache[key] = bars
+    return _worker_cache[key]
+
+
 def _run_trial(
     strategy_name: str,
     symbol_name: str,
@@ -69,14 +90,11 @@ def _run_trial(
         symbol = SYMBOLS_BY_NAME[symbol_name]
         template = STRATEGIES[strategy_name]
 
-        # Load data
-        bars = load_bars(symbol_name, timeframe, start=start, end=end)
+        # Load data with indicators (cached per worker)
+        bars = _load_bars_with_indicators(symbol_name, timeframe, start=start, end=end)
         if bars.empty:
             return TrialResult(strategy_name, symbol_name, timeframe, params, {},
                                error="no data")
-
-        # Add indicators
-        bars = add_indicators(bars)
 
         # Generate signals
         all_params = {**template.params, **params}

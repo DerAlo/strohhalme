@@ -154,9 +154,9 @@ def add_indicators(
         ema_periods: EMA periods to compute (default: all periods from 5 to 80 in steps of 5)
     """
     if sma_periods is None:
-        sma_periods = list(range(5, 401, 5))   # covers all strategy templates
+        sma_periods = list(range(1, 401))  # all periods 1-400 covers any strategy template
     if ema_periods is None:
-        ema_periods = list(range(5, 81, 5))    # covers EMA up to 75
+        ema_periods = list(range(1, 81))   # all periods 1-80 covers EMAs up to 75
 
     df = bars.copy()
     close = df["close"]
