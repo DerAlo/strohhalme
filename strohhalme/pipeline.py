@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,12 +58,18 @@ async def download_data(
 
     all_bars: dict[str, pd.DataFrame] = {}
 
-    dl = DukascopyDownloader()
+    dl = DukascopyDownloader(proxy_url=os.environ.get("DUKASCOPY_PROXY", "socks5://localhost:9050"))
     dukascopy_ok = False
     try:
-        # Quick connectivity test
+        # Quick connectivity test through proxy
         import aiohttp
-        async with aiohttp.ClientSession() as sess:
+        from aiohttp_socks import ProxyConnector
+        proxy_url = os.environ.get("DUKASCOPY_PROXY", "socks5://localhost:9050")
+        connector = ProxyConnector.from_url(proxy_url)
+        async with aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as sess:
             async with sess.get(
                 "https://datafeed.dukascopy.com/datafeed/EURUSD/2024/00/01/00h_ticks.bi5",
                 timeout=aiohttp.ClientTimeout(total=5),

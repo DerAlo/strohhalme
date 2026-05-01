@@ -42,12 +42,13 @@ TICK_STRUCT = struct.Struct(">IffII")  # ms from epoch, ask, bid, ask_vol, bid_v
 class DukascopyDownloader:
     """Downloads and parses Dukascopy tick data."""
 
-    def __init__(self, cache_dir: Path = DATA_RAW):
+    def __init__(self, cache_dir: Path = DATA_RAW, proxy_url: str | None = None):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._session: aiohttp.ClientSession | None = None
         self._last_request = 0.0
         self._sem = asyncio.Semaphore(MAX_CONCURRENT)
+        self.proxy_url = proxy_url
 
     async def _rate_limited_get(self, url: str) -> bytes:
         """GET with mandatory delay between requests."""
