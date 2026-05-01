@@ -34,7 +34,7 @@ from ..config import DATA_RAW, DATA_PROCESSED, SYMBOLS_BY_NAME
 logger = logging.getLogger(__name__)
 
 DUKASCOPY_BASE = "https://www.dukascopy.com/datafeed"
-DOWNLOAD_DELAY = 3.0       # seconds between requests
+DOWNLOAD_DELAY = 1.0       # seconds between requests (3.0 for direct, 1.0 for proxy)
 MAX_CONCURRENT = 2         # max concurrent downloads
 TICK_STRUCT = struct.Struct(">IffII")  # ms from epoch, ask, bid, ask_vol, bid_vol
 
@@ -50,24 +50,45 @@ class DukascopyDownloader:
         self._sem = asyncio.Semaphore(MAX_CONCURRENT)
         self.proxy_url = proxy_url
 
-    async def _rate_limited_get(self, url: str) -> bytes:
-        """GET with mandatory delay between requests."""
+    async def _rate_limit_wait(self):
+        """Wait for the mandatory delay between requests."""
         elapsed = time.monotonic() - self._last_request
         if elapsed < DOWNLOAD_DELAY:
             await asyncio.sleep(DOWNLOAD_DELAY - elapsed)
 
-        async with self._sem:
-            if self._session is None:
-                self._session = aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=30),
+    async def _rate_limited_get(self, url: str) -> bytes:
+        """GET with mandatory delay, retry on timeout/transient errors."""
+        last_exc = None
+        for attempt in range(3):
+            try:
+                await self._rate_limit_wait()
+                async with self._sem:
+                    if self._session is None:
+                        if self.proxy_url:
+                            from aiohttp_socks import ProxyConnector
+                            connector = ProxyConnector.from_url(self.proxy_url)
+                        else:
+                            connector = aiohttp.TCPConnector()
+                        self._session = aiohttp.ClientSession(
+                            timeout=aiohttp.ClientTimeout(total=90),
+                            connector=connector,
+                        )
+                    async with self._session.get(url) as resp:
+                        if resp.status == 404:
+                            return b""
+                        resp.raise_for_status()
+                        data = await resp.read()
+                    self._last_request = time.monotonic()
+                    return data
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                last_exc = e
+                wait = 2 * (attempt + 1)
+                logger.warning(
+                    "Request failed (attempt %d/3): %s. Retrying in %ds",
+                    attempt + 1, e, wait,
                 )
-            async with self._session.get(url) as resp:
-                if resp.status == 404:
-                    return b""  # no data for this hour (weekend, holiday)
-                resp.raise_for_status()
-                data = await resp.read()
-            self._last_request = time.monotonic()
-            return data
+                await asyncio.sleep(wait)
+        raise last_exc  # type: ignore[misc]
 
     def _url(self, symbol: str, dt: datetime) -> str:
         """Build Dukascopy datafeed URL for a specific hour."""
@@ -107,7 +128,7 @@ class DukascopyDownloader:
             ts, ask, bid, avol, bvol = TICK_STRUCT.unpack_from(decompressed, offset)
             data[i] = (int(ts), float(ask), float(bid), float(avol), float(bvol))
 
-        # Ensure strict monotonic timestamps (Dukascopy sometimes has out-of-order ticks)
+        # Ensure strict monotonic timestamps
         if len(data) > 1:
             data.sort(order="ts")
             # Remove duplicates
@@ -124,14 +145,24 @@ class DukascopyDownloader:
         return self._parse_bi5(raw)
 
     async def download_day(self, symbol: str, year: int, month: int, day: int) -> np.ndarray | None:
-        """Download all 24 hours of a single day, concatenated."""
+        """Download all 24 hours of a single day, concatenated.
+
+        Uses return_exceptions and filters out None results
+        so that one flaky hour does not kill the whole day.
+        """
         tasks = []
         for hour in range(24):
             dt = datetime(year, month, day, hour)
             tasks.append(self.download_hour(symbol, dt))
 
-        results = await asyncio.gather(*tasks)
-        valid = [r for r in results if r is not None and len(r) > 0]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid = []
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("Hour download failed (skipped): %s", r)
+                continue
+            if r is not None and len(r) > 0:
+                valid.append(r)
         if not valid:
             return None
         return np.concatenate(valid)

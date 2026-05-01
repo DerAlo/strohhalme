@@ -23,6 +23,7 @@ from .config import (
 from .data.dukascopy import DukascopyDownloader
 from .data.parser import ticks_to_bars, bars_to_parquet, load_bars
 from .data.synthetic import ensure_data
+from .data.yahoo import YahooDownloader
 from .engine.optimizer import optimize
 from .validation.gates import run_gates, all_passed
 from .strategies.templates import STRATEGIES
@@ -92,12 +93,23 @@ async def download_data(
                         bars_to_parquet(bars, symbol, tf)
                         all_bars[f"{symbol}_{tf}"] = bars
     else:
-        logger.warning("Dukascopy unreachable — using synthetic data")
+        logger.warning("Dukascopy unreachable — trying Yahoo Finance...")
+        yahoo_dl = YahooDownloader()
+        yahoo_ok = False
         for symbol in symbols:
             for tf in timeframes:
-                bars = ensure_data(symbol, tf, start, end)
-                if not bars.empty:
+                bars = await yahoo_dl.download_bars(symbol, start, end, tf)
+                if bars is not None and not bars.empty:
+                    bars_to_parquet(bars, symbol, tf)
                     all_bars[f"{symbol}_{tf}"] = bars
+                    yahoo_ok = True
+        if not yahoo_ok:
+            logger.warning("Yahoo Finance also empty — using synthetic data")
+            for symbol in symbols:
+                for tf in timeframes:
+                    bars = ensure_data(symbol, tf, start, end)
+                    if not bars.empty:
+                        all_bars[f"{symbol}_{tf}"] = bars
 
     await dl.close()
     return all_bars
@@ -108,6 +120,7 @@ def run_optimization(
     timeframes: list[str],
     start: str | None = None,
     end: str | None = None,
+    n_samples: int = 50,
 ) -> list:
     """Run optimization → validation → ranking on existing data."""
     logger.info("Starting optimization: %d symbols × %d timeframes", len(symbols), len(timeframes))
@@ -117,7 +130,7 @@ def run_optimization(
         strategies=None,    # all
         symbols=symbols,
         timeframes=timeframes,
-        n_samples=50,
+        n_samples=n_samples,
         start=start,
         end=end,
     )
@@ -170,6 +183,7 @@ def main():
     parser.add_argument("--start", default=None, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", default=None, help="End date (YYYY-MM-DD)")
     parser.add_argument("--optimize-only", action="store_true", help="Skip download, run optimization only")
+    parser.add_argument("--samples", type=int, default=50, help="Number of parameter samples per strategy")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     args = parser.parse_args()
@@ -188,7 +202,7 @@ def main():
         asyncio.run(download_data(args.symbols, args.start, args.end, args.timeframes))
 
     if args.optimize_only or args.download or True:  # always optimize if data exists
-        run_optimization(args.symbols, args.timeframes, args.start, args.end)
+        run_optimization(args.symbols, args.timeframes, args.start, args.end, n_samples=args.samples)
 
     logger.info("Pipeline complete.")
 
