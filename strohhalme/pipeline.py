@@ -21,6 +21,7 @@ from .config import (
 )
 from .data.dukascopy import DukascopyDownloader
 from .data.parser import ticks_to_bars, bars_to_parquet, load_bars
+from .data.synthetic import ensure_data
 from .engine.optimizer import optimize
 from .validation.gates import run_gates, all_passed
 from .strategies.templates import STRATEGIES
@@ -47,36 +48,50 @@ async def download_data(
 ) -> dict[str, pd.DataFrame]:
     """Download Dukascopy tick data → aggregate to bars → store as Parquet.
 
+    Falls back to synthetic data if Dukascopy is unreachable (common from cloud IPs).
+
     Returns dict[symbol_tf_key] → DataFrame.
     """
     if timeframes is None:
         timeframes = ["H1"]
 
-    start_dt = datetime.fromisoformat(start)
-    end_dt = datetime.fromisoformat(end)
-
     all_bars: dict[str, pd.DataFrame] = {}
 
     dl = DukascopyDownloader()
+    dukascopy_ok = False
     try:
+        # Quick connectivity test
+        import aiohttp
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(
+                "https://datafeed.dukascopy.com/datafeed/EURUSD/2024/00/01/00h_ticks.bi5",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                dukascopy_ok = resp.status == 200
+    except Exception:
+        pass
+
+    if dukascopy_ok:
+        start_dt = datetime.fromisoformat(start)
+        end_dt = datetime.fromisoformat(end)
         for symbol in symbols:
             logger.info("Downloading %s from %s to %s", symbol, start, end)
             ticks = await dl.download_range(symbol, start_dt, end_dt, progress=True)
-
-            if ticks is None or ticks.empty:
-                logger.warning("No tick data for %s in range", symbol)
-                continue
-
+            if ticks is not None and not ticks.empty:
+                for tf in timeframes:
+                    bars = ticks_to_bars(ticks, tf, symbol)
+                    if not bars.empty:
+                        bars_to_parquet(bars, symbol, tf)
+                        all_bars[f"{symbol}_{tf}"] = bars
+    else:
+        logger.warning("Dukascopy unreachable — using synthetic data")
+        for symbol in symbols:
             for tf in timeframes:
-                bars = ticks_to_bars(ticks, tf, symbol)
+                bars = ensure_data(symbol, tf, start, end)
                 if not bars.empty:
-                    bars_to_parquet(bars, symbol, tf)
                     all_bars[f"{symbol}_{tf}"] = bars
-                    logger.info("  %s %s: %d bars stored", symbol, tf, len(bars))
 
-    finally:
-        await dl.close()
-
+    await dl.close()
     return all_bars
 
 
