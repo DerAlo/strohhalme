@@ -6,10 +6,13 @@ Läuft auf Kandidaten die alle Basis-Gates bestanden haben.
 import json
 import logging
 import sys
+import os
 import numpy as np
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Immer vom Projekt-Root aus starten
+os.chdir(Path(__file__).resolve().parent.parent)
+sys.path.insert(0, os.getcwd())
 from strohhalme.validation.advanced import (
     gate_stability_full,
     gate_walk_forward_full,
