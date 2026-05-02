@@ -9,6 +9,9 @@ build/
 data/raw/
 data/processed/
 *.parquet
-results/
+results/optimization_*.json
+results/validation_*.json
+results/best_ea.mq5
+results/*.txt
 *.log
 .DS_Store
