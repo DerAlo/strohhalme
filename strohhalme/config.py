@@ -33,6 +33,10 @@ SYMBOLS = {
     "EURJPY": Symbol("EURJPY", 10.0 / 150.0, 0.001, 3, 1.8, -6.0, 2.0),
     "AUDUSD": Symbol("AUDUSD", 10.0, 0.00001, 5, 1.5, -3.0, 1.0),
     "USDCAD": Symbol("USDCAD", 10.0 / 1.38, 0.00001, 5, 1.8, -4.0, 1.0),
+    "BTCUSD": Symbol("BTCUSD", 10.0, 1.0, 2, 10.0, 0.0, 0.0, lot_size=1),
+    "ETHUSD": Symbol("ETHUSD", 10.0, 0.01, 2, 10.0, 0.0, 0.0, lot_size=1),
+    "SP500": Symbol("SP500", 12.5, 1.0, 2, 1.0, 0.0, 0.0, commission=0, lot_size=1),
+    "DAX": Symbol("DAX", 25.0, 1.0, 2, 1.0, 0.0, 0.0, commission=0, lot_size=1),
 }
 SYMBOLS_BY_NAME = {s.name: s for s in SYMBOLS.values()}
 
@@ -92,6 +96,19 @@ VALIDATION: dict = {
         "method": "holm_bonferroni",
         "alpha": 0.05,
     },
+}
+
+# Position sizing & risk management
+# These determine how much capital is deployed per trade.
+# Risk-based sizing ensures the account doesn't blow up from a single bad trade.
+# Formula: position_size = equity * risk_per_trade / (atr * stop_atr)
+RISK: dict = {
+    "risk_per_trade": 0.01,          # 1% of current equity risked per trade
+    "stop_atr": 2.0,                 # stop distance in ATR units
+    "min_lot": 1_000,                # minimum lot (0.01 micro lot)
+    "max_lot": 100_000,              # maximum lot (1.0 standard lot)
+    "initial_equity": 10_000.0,      # starting account balance in USD
+    "stop_out_pct": 0.50,            # stop trading if equity drops below this % of peak
 }
 
 PIPELINE: dict = {

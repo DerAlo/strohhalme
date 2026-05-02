@@ -38,17 +38,28 @@ def _simulate(
     closes: np.ndarray,
     spreads: np.ndarray,
     atr: np.ndarray,
-    lot_size: float,
-    pip_value: float,
-    commission: float,
+    lot_size: float,           # base lot size (100000 = standard)
+    pip_value: float,          # $ per pip per standard lot
+    commission: float,         # per round-turn per STANDARD lot
     swap_long: float,
     swap_short: float,
     thin_bars: np.ndarray,
     slippage_pct: float = 0.3,
     min_slippage: float = 0.5,
     max_slippage: float = 50.0,
+    initial_equity: float = 10000.0,
+    risk_per_trade: float = 0.01,
+    stop_atr: float = 2.0,
+    min_lot: float = 1000.0,
+    max_lot: float = 100000.0,
+    stop_out_pct: float = 0.50,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Numba-jitted fill simulation loop.
+    """Numba-jitted fill simulation loop with risk-based position sizing.
+
+    Instead of a fixed lot size, each trade's position is sized dynamically
+    so that at most risk_per_trade of current equity is lost if price moves
+    stop_atr × ATR against the position.  This prevents account blowup from
+    a single bad trade and keeps the simulation realistic.
 
     Returns: (equity, pnl_per_bar, trades, drawdown)
     All returns are np.float64 arrays sized len(positions).
@@ -63,10 +74,13 @@ def _simulate(
     position_type = 0         # 1=long, -1=short
     entry_price = 0.0
     entry_bar = 0
-    peak_equity = 10000.0     # starting balance
-    current_equity = 10000.0
+    peak_equity = initial_equity
+    current_equity = initial_equity
     swap_counter = 0
-    stopped_out = False       # circuit breaker: stop trading if equity < 50%
+    stopped_out = False
+    stop_out_threshold = initial_equity * stop_out_pct
+
+    active_lot = min_lot  # last computed lot size (in units, e.g. 1000 = micro lot)
 
     for i in range(n):
         if stopped_out:
@@ -80,12 +94,21 @@ def _simulate(
         slippage = max(min_slippage, min(max_slippage, atr[i] * slippage_pct))
 
         if signal != 0 and not in_position:
-            # ── ENTRY ──
+            # ── ENTRY ── Compute risk-based position size
+            # risk = stop_distance (abs price) × position_units
+            # So: position_units = risk_amount / stop_distance
+            risk_amount = current_equity * risk_per_trade
+            stop_dist = atr[i] * stop_atr
+            if stop_dist > 0.0 and risk_amount > 0.0:
+                active_lot = max(min_lot, min(max_lot, risk_amount / stop_dist))
+            else:
+                active_lot = min_lot
+
             if signal == 1:  # buy
-                fill_price = opens[i] + spread  # always buy at ask
+                fill_price = opens[i] + spread
                 position_type = 1
             else:  # sell
-                fill_price = opens[i]  # sell at bid (open - spread bot for short)
+                fill_price = opens[i]
                 position_type = -1
 
             in_position = True
@@ -93,60 +116,60 @@ def _simulate(
             entry_bar = i
             swap_counter = 0
 
-            # Commission on entry
-            current_equity -= commission
-            pnl_bar[i] -= commission
+            # Commission on entry (proportional to active lot)
+            entry_comm = commission * (active_lot / lot_size)
+            current_equity -= entry_comm
+            pnl_bar[i] -= entry_comm
 
         elif signal == -position_type and in_position:
             # ── EXIT (reverse signal) ──
             if position_type == 1:  # close long
-                fill_price = opens[i] - slippage  # sell at bid minus slippage
+                fill_price = opens[i] - slippage
             else:  # close short
-                fill_price = opens[i] + spread + slippage  # buy back at ask plus slippage
+                fill_price = opens[i] + spread + slippage
 
-            # P&L
-            pnl = (fill_price - entry_price) * position_type * lot_size
-            current_equity += pnl - commission
-            pnl_bar[i] = pnl - commission
-            trades[i] = pnl - commission
+            pnl = (fill_price - entry_price) * position_type * active_lot
+            exit_comm = commission * (active_lot / lot_size)
+            current_equity += pnl - exit_comm
+            pnl_bar[i] = pnl - exit_comm
+            trades[i] = pnl - exit_comm
 
             in_position = False
             position_type = 0
 
         elif in_position:
-            # ── HOLD ──
-            # Mark to market at bar close (mid price, no spread)
-            mtm = (closes[i] - entry_price) * position_type * lot_size
-            prev_mtm = (closes[i-1] - entry_price) * position_type * lot_size if i > 0 else 0.0
+            # ── HOLD ── Mark to market
+            mtm = (closes[i] - entry_price) * position_type * active_lot
+            prev_mtm = (closes[i-1] - entry_price) * position_type * active_lot if i > 0 else 0.0
             pnl_bar[i] = mtm - prev_mtm
 
-            # Swap: charge every 24 bars ≈ daily on H1
             swap_counter += 1
             if swap_counter >= 24:
                 swap_rate = swap_long if position_type == 1 else swap_short
-                current_equity += swap_rate
-                pnl_bar[i] += swap_rate
+                swap_rate_scaled = swap_rate * (active_lot / lot_size)
+                current_equity += swap_rate_scaled
+                pnl_bar[i] += swap_rate_scaled
                 swap_counter = 0
 
         # Update equity
         current_equity += pnl_bar[i]
         equity[i] = current_equity
 
-        # Circuit breaker: stop out if below 50%
-        if current_equity < 5000.0 and in_position:
-            # Emergency close at current close price
+        # Circuit breaker: force-close at stop_out
+        if current_equity < stop_out_threshold and in_position:
             if position_type == 1:
                 close_price = closes[i] - slippage
             else:
                 close_price = closes[i] + spread + slippage
-            pnl = (close_price - entry_price) * position_type * lot_size
-            current_equity += pnl - commission
-            pnl_bar[i] += pnl - commission
-            trades[i] = pnl - commission
+            pnl = (close_price - entry_price) * position_type * active_lot
+            exit_comm = commission * (active_lot / lot_size)
+            current_equity += pnl - exit_comm
+            pnl_bar[i] += pnl - exit_comm
+            trades[i] = pnl - exit_comm
             in_position = False
             position_type = 0
             equity[i] = current_equity
-        if current_equity < 5000.0 and not in_position:
+        if current_equity < stop_out_threshold and not in_position:
             stopped_out = True
 
         # Drawdown
@@ -181,14 +204,20 @@ def compute_metrics(
     if len(rets) < 5:
         return {"error": "too few returns"}
 
-    # Basic
-    total_return = (equity[-1] / equity[0] - 1) if equity[0] > 0 else 0.0
-    cagr = (equity[-1] / equity[0]) ** (1 / max(years, 0.5)) - 1.0 if equity[0] > 0 else 0.0
+    # Basic — safe against negative equity (blowup) or zero equity
+    if equity[0] > 0 and equity[-1] > 0:
+        total_return = equity[-1] / equity[0] - 1
+        cagr = (equity[-1] / equity[0]) ** (1 / max(years, 0.5)) - 1.0
+    else:
+        total_return = -1.0
+        cagr = -1.0
 
-    # Risk
-    annual_vol = np.std(rets) * np.sqrt(trading_days * 24 * 60)
+    # Risk — annualize based on actual bar frequency
+    minutes_per_bar = TIMEFRAME_TO_MINUTES.get(bars.index.freqstr, 60) if hasattr(bars.index, 'freqstr') else 60
+    bars_per_year = trading_days * 24 * 60 / minutes_per_bar
+    annual_vol = np.std(rets) * np.sqrt(bars_per_year)
     downside_rets = rets[rets < 0]
-    sortino_vol = np.std(downside_rets) * np.sqrt(trading_days * 24 * 60) if len(downside_rets) > 0 else annual_vol
+    sortino_vol = np.std(downside_rets) * np.sqrt(bars_per_year) if len(downside_rets) > 0 else annual_vol
     sharpe = (cagr - risk_free_rate) / annual_vol if annual_vol > 0 else 0.0
     sortino = (cagr - risk_free_rate) / sortino_vol if sortino_vol > 0 else 0.0
 
@@ -235,4 +264,4 @@ def compute_metrics(
     }
 
 
-TIMEFRAME_TO_MINUTES = {"1min": 1, "5min": 5, "15min": 15, "30min": 30, "1h": 60, "4h": 240, "1D": 1440}
+TIMEFRAME_TO_MINUTES = {"1min": 1, "5min": 5, "15min": 15, "30min": 30, "1h": 60, "4h": 240, "D1": 1440, "1D": 1440}

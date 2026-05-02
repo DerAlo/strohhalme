@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..config import PIPELINE, SYMBOLS_BY_NAME, TIMEFRAMES
+from ..config import PIPELINE, SYMBOLS_BY_NAME, TIMEFRAMES, RISK
 from ..data.parser import load_bars, add_indicators
 from ..engine.backtest import _simulate, compute_metrics
 from ..strategies.templates import StrategyTemplate, STRATEGIES
@@ -100,17 +100,22 @@ def _run_trial(
         all_params = {**template.params, **params}
         signals = template.generate(bars, **all_params)
 
-        # Filter: only valid entries
+        # Filter: only valid entries — propagate continuous position state
+        # IMPORTANT: exit signals must be preserved in the positions array
+        # for _simulate to see them. Setting positions[i]=0 on exit means
+        # the simulator never sees the exit and the position floats to blowup.
         positions = np.zeros_like(signals)
         in_pos = 0
         for i in range(len(signals)):
             sig = signals[i]
             if sig != 0 and in_pos == 0:
-                positions[i] = sig
                 in_pos = sig
+                positions[i] = sig
             elif sig == -in_pos and in_pos != 0:
-                positions[i] = -in_pos
+                positions[i] = sig  # preserve exit signal for _simulate
                 in_pos = 0
+            else:
+                positions[i] = in_pos
 
         # Prepare arrays for numba
         opens = bars["open"].values
@@ -125,6 +130,12 @@ def _run_trial(
             positions, highs, lows, opens, closes, spreads, atr,
             symbol.lot_size, symbol.pip_value, symbol.commission,
             symbol.swap_long, symbol.swap_short, thin,
+            initial_equity=RISK["initial_equity"],
+            risk_per_trade=RISK["risk_per_trade"],
+            stop_atr=RISK["stop_atr"],
+            min_lot=RISK["min_lot"],
+            max_lot=RISK["max_lot"],
+            stop_out_pct=RISK["stop_out_pct"],
         )
 
         metrics = compute_metrics(equity, trades_arr, bars)

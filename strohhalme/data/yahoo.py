@@ -49,7 +49,13 @@ MAX_DAYS = {
     "1d": 10 * 365,
 }
 
-YAHOO_TICKER = {"EURUSD": "EURUSD=X"}
+YAHOO_TICKER = {
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "USDJPY=X",
+    "ETHUSD": "ETH-USD",
+    "BTCUSD": "BTC-USD",
+}
 
 
 class YahooDownloader:

@@ -197,7 +197,85 @@ def _asian_session_fade(bars: pd.DataFrame, atr_mult: float = 0.5) -> np.ndarray
     return signals
 
 
-# ── Registry ─────────────────────────────────────────────────────────────────
+def _channel_pullback(bars: pd.DataFrame, channel_period: int = 30,
+                      atr_entry: float = 0.5, min_pullback_pct: float = 0.3,
+                      rr_ratio: float = 2.0, atr_stop: float = 0.8) -> np.ndarray:
+    """CHANNEL PULLBACK is deprecated — use _breakout_swing instead."""
+    return _breakout_swing(bars, channel_period=channel_period, atr_entry=atr_entry,
+                           atr_trail=atr_stop)
+
+
+def _breakout_swing(bars: pd.DataFrame, channel_period: int = 24,
+                    atr_entry: float = 0.8, atr_trail: float = 2.0) -> np.ndarray:
+    """Channel breakout swing with trailing stop (snapshot-based).
+
+    Key insight: rolling channels kill breakouts because the channel boundary
+    moves with the trend. Fixed snapshot approach: once every channel_period bars,
+    freeze the channel high/low and watch for breakouts over the window.
+    """
+    close = bars["close"].values
+    high = bars["high"].values
+    low = bars["low"].values
+    atr = bars["atr"].values
+
+    signals = np.zeros(len(bars), dtype=np.int8)
+    in_position = 0       # 1=long, -1=short
+    stop_price = 0.0
+    snap_bar = -1          # bar index when we took the last snapshot
+    snap_high = 0.0
+    snap_low = 0.0
+    cooldown_until = 0
+
+    for i in range(1, len(bars)):
+        if np.isnan(atr[i]) or atr[i] <= 0:
+            continue
+
+        if in_position != 0:
+            # Trail stop
+            if in_position == 1:
+                stop_price = max(stop_price, close[i] - atr_trail * atr[i])
+                if low[i] <= stop_price:
+                    signals[i] = -1
+                    in_position = 0
+                    cooldown_until = i + 12
+            else:
+                stop_price = min(stop_price, close[i] + atr_trail * atr[i])
+                if high[i] >= stop_price:
+                    signals[i] = 1
+                    in_position = 0
+                    cooldown_until = i + 12
+            continue
+
+        # In cooldown — skip
+        if i < cooldown_until:
+            continue
+
+        # Time for a new snapshot?
+        if i >= snap_bar + channel_period:
+            snap_bar = i
+            lookback_start = max(0, i - channel_period)
+            snap_high = np.max(high[lookback_start:i])
+            snap_low = np.min(low[lookback_start:i])
+
+        # If no snapshot yet, keep waiting
+        if snap_bar < 0:
+            continue
+
+        # Check breakout against FIXED snapshot levels
+        entry_threshold = atr_entry * atr[i]
+        if close[i] > snap_high + entry_threshold:
+            in_position = 1
+            stop_price = close[i] - atr_trail * atr[i]
+            signals[i] = 1
+            snap_bar = -1  # reset — next snapshot after exit
+        elif close[i] < snap_low - entry_threshold:
+            in_position = -1
+            stop_price = close[i] + atr_trail * atr[i]
+            signals[i] = -1
+            snap_bar = -1
+
+    return signals
+
 
 STRATEGIES: dict[str, StrategyTemplate] = {
     "ema_crossover": StrategyTemplate(
@@ -234,5 +312,12 @@ STRATEGIES: dict[str, StrategyTemplate] = {
         params={"atr_mult": 0.5},
         param_ranges={"atr_mult": (0.25, 2.0)},
         generate=_asian_session_fade,
+    ),
+    "breakout_swing": StrategyTemplate(
+        name="breakout_swing",
+        description="Channel breakout swing with trailing stop — simple, proven forex pattern",
+        params={"channel_period": 24, "atr_entry": 0.8, "atr_trail": 2.0},
+        param_ranges={"channel_period": (12, 60), "atr_entry": (0.3, 1.5), "atr_trail": (1.0, 4.0)},
+        generate=_breakout_swing,
     ),
 }

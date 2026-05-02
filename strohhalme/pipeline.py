@@ -45,8 +45,8 @@ def setup_logging(level: int = logging.INFO):
 
 async def download_data(
     symbols: list[str],
-    start: str,
-    end: str,
+    start: str = "2024-01-01",
+    end: str = "2025-12-31",
     timeframes: list[str] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Download Dukascopy tick data → aggregate to bars → store as Parquet.
@@ -83,13 +83,30 @@ async def download_data(
     if dukascopy_ok:
         start_dt = datetime.fromisoformat(start)
         end_dt = datetime.fromisoformat(end)
+        crypto_symbols = {"BTCUSD", "ETHUSD"}  # skip Dukascopy — crypto not available
+        missing_symbols = []
         for symbol in symbols:
+            if symbol in crypto_symbols:
+                missing_symbols.append(symbol)
+                continue
             logger.info("Downloading %s from %s to %s", symbol, start, end)
             ticks = await dl.download_range(symbol, start_dt, end_dt, progress=True)
             if ticks is not None and not ticks.empty:
                 for tf in timeframes:
                     bars = ticks_to_bars(ticks, tf, symbol)
                     if not bars.empty:
+                        bars_to_parquet(bars, symbol, tf)
+                        all_bars[f"{symbol}_{tf}"] = bars
+                        missing_symbols.remove(symbol) if symbol in missing_symbols else None
+            else:
+                missing_symbols.append(symbol)
+        if missing_symbols:
+            logger.warning("Dukascopy partial — downloading remaining %s via Yahoo...", missing_symbols)
+            yahoo_dl = YahooDownloader()
+            for symbol in missing_symbols:
+                for tf in timeframes:
+                    bars = await yahoo_dl.download_bars(symbol, start, end, tf)
+                    if bars is not None and not bars.empty:
                         bars_to_parquet(bars, symbol, tf)
                         all_bars[f"{symbol}_{tf}"] = bars
     else:
@@ -199,7 +216,12 @@ def main():
     import asyncio
 
     if args.download:
-        asyncio.run(download_data(args.symbols, args.start, args.end, args.timeframes))
+        asyncio.run(download_data(
+            args.symbols,
+            start=args.start or "2023-01-01",
+            end=args.end or "2025-12-31",
+            timeframes=args.timeframes,
+        ))
 
     if args.optimize_only or args.download or True:  # always optimize if data exists
         run_optimization(args.symbols, args.timeframes, args.start, args.end, n_samples=args.samples)

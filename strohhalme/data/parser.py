@@ -202,4 +202,21 @@ def add_indicators(
     df["macd_signal"] = macd_line.ewm(span=9, min_periods=5).mean()
     df["macd_hist"] = macd_line - df["macd_signal"]
 
+    # ADX (14) — Average Directional Index for trend strength
+    tr14 = tr.rolling(14).mean()
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=high.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=low.index)
+    plus_di = 100 * plus_dm.ewm(span=14, min_periods=7).mean() / tr14.replace(0, 1e-10)
+    minus_di = 100 * minus_dm.ewm(span=14, min_periods=7).mean() / tr14.replace(0, 1e-10)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-10)
+    df["adx"] = dx.rolling(14, min_periods=7).mean()
+
+    # SMA slope (2-period rate of change as proxy for trend momentum)
+    for p in [20, 50, 100, 200]:
+        if p in sma_periods:
+            sma = df[f"sma_{p}"]
+            df[f"sma_slope_{p}"] = sma.pct_change(2) * 100  # % change over 2 bars
+
     return df
